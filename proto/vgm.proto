@@ -1,0 +1,22 @@
+syntax = "proto3";
+package vgm;
+
+message Payload { string json = 1; }
+service Identity {
+  rpc Register(Payload) returns (Payload);
+  rpc Login(Payload) returns (Payload);
+  rpc Authenticate(Payload) returns (Payload);
+  rpc Logout(Payload) returns (Payload);
+  rpc Search(Payload) returns (Payload);
+  rpc Profiles(Payload) returns (Payload);
+  rpc UpdateProfile(Payload) returns (Payload);
+}
+service Messaging {
+  rpc Conversations(Payload) returns (Payload);
+  rpc OpenConversation(Payload) returns (Payload);
+  rpc Messages(Payload) returns (Payload);
+  rpc Send(Payload) returns (Payload);
+}
+service Video {
+  rpc Resolve(Payload) returns (Payload);
+}

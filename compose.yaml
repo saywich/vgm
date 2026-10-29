@@ -1,0 +1,140 @@
+name: vertical
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  init: true
+  environment: &backend-env
+    DATABASE_URL: postgresql://${POSTGRES_USER:-vgm}:${POSTGRES_PASSWORD:-vgm-local-change-me}@postgres:5432/${POSTGRES_DB:-vgm}
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    IDENTITY_ADDRESS: identity:50051
+    MESSAGING_ADDRESS: messaging:50051
+    VIDEO_ADDRESS: video:50051
+  healthcheck: &grpc-health
+    test: [CMD, python, -m, vgm.healthcheck]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 15s
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vgm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vgm-local-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-vgm}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  migrate:
+    <<: *backend
+    restart: "no"
+    healthcheck: {disable: true}
+    command: [alembic, -c, backend/alembic.ini, upgrade, head]
+    depends_on:
+      postgres: {condition: service_healthy}
+  identity:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: identity
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  video:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: video
+  messaging:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: messaging
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      identity: {condition: service_healthy}
+      video: {condition: service_healthy}
+  gateway:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: gateway
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    command: [gunicorn, --bind, '0.0.0.0:8000', --workers, '1', --threads, '8', --timeout, '30', 'vgm.gateway:app']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=8)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      identity: {condition: service_healthy}
+      messaging: {condition: service_healthy}
+      video: {condition: service_healthy}
+  frontend:
+    build: {context: ., dockerfile: frontend/Dockerfile}
+    restart: unless-stopped
+    ports: ['127.0.0.1:${APP_PORT:-8080}:80']
+    depends_on:
+      gateway: {condition: service_healthy}
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+    user: "0:0"
+    volumes: [jaeger-data:/badger]
+    ports: ['127.0.0.1:16686:16686']
+  loki:
+    image: grafana/loki:3.5.0
+    restart: unless-stopped
+    command: [-config.file=/etc/loki/local.yaml]
+    volumes:
+      - ./deploy/loki.yaml:/etc/loki/local.yaml:ro
+      - loki-data:/loki
+  alloy:
+    image: grafana/alloy:v1.10.0
+    restart: unless-stopped
+    command: [run, --storage.path=/var/lib/alloy/data, /etc/alloy/config.alloy]
+    volumes:
+      - ./deploy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on: [loki]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+  grafana:
+    image: grafana/grafana:12.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-vertical-local-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ['127.0.0.1:3000:3000']
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus, loki, jaeger]
+
+volumes:
+  postgres-data:
+  jaeger-data:
+  loki-data:
+  alloy-data:
+  prometheus-data:
+  grafana-data:
