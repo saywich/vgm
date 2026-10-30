@@ -24,11 +24,12 @@ def main():
     if pool:
         pool.wait(timeout=20)
 
-    service: type[identity.Identity] | type[messaging.Messaging] | type[video.Video] = {
-        "identity": identity.Identity,
-        "messaging": messaging.Messaging,
-        "video": video.Video
-    }[name]
+    service: type[identity.Identity] | type[messaging.Messaging
+                                           ] | type[video.Video] = {
+                                               "identity": identity.Identity,
+                                               "messaging": messaging.Messaging,
+                                               "video": video.Video
+                                           }[name]
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
         options=[("grpc.max_receive_message_length", 65536)]
